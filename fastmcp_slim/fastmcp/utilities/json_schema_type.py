@@ -411,13 +411,44 @@ def _json_values_equal(left: Any, right: Any) -> bool:
     return left == right
 
 
+def _json_value_key(value: Any) -> tuple[Any, ...]:
+    """Build a hashable key with JSON equality, including nested booleans."""
+    if isinstance(value, bool):
+        return (bool, value)
+    if isinstance(value, (int, float)):
+        # NaN is not JSON and does not have reflexive equality.
+        if value != value:
+            raise TypeError("Non-JSON number")
+        return (int, value)
+    if isinstance(value, str):
+        return (str, value)
+    if value is None:
+        return (type(None),)
+    if isinstance(value, Mapping):
+        return (
+            dict,
+            frozenset((key, _json_value_key(item)) for key, item in value.items()),
+        )
+    if isinstance(value, (list, tuple)):
+        return (list, tuple(_json_value_key(item) for item in value))
+    raise TypeError("Non-JSON value")
+
+
 def _validate_unique_items(value: Any) -> Any:
     """Reject duplicate JSON array items while preserving list semantics."""
-    if not isinstance(value, (list, tuple)):
+    if not isinstance(value, (list, tuple)) or len(value) < 2:
         return value
 
-    for index, item in enumerate(value):
-        if any(_json_values_equal(item, previous) for previous in value[:index]):
+    try:
+        keys = [_json_value_key(item) for item in value]
+        unique_count = len(set(keys))
+    except (TypeError, RecursionError):
+        # Preserve validation of non-JSON Python inputs accepted by TypeAdapter.
+        for index, item in enumerate(value):
+            if any(_json_values_equal(item, previous) for previous in value[:index]):
+                raise ValueError("Array items must be unique") from None
+    else:
+        if unique_count != len(keys):
             raise ValueError("Array items must be unique")
 
     return value
